@@ -22,7 +22,21 @@ export async function acknowledgeAgentActions(
     return { ...action, sent_at: actionIds.indexOf(action.id) >= 0 ? now : undefined };
   });
 
+  const configRevision = updatedActions.reduce((acc, action) => {
+    if (action.type !== 'CONFIG_CHANGE') {
+      return acc;
+    }
+    const data = action.data ? JSON.parse(action.data as string) : {};
+
+    if (data.config.id !== agent.config_id) {
+      return acc;
+    }
+
+    return data.config.revision > acc ? data.config.revision : acc;
+  }, agent.config_revision || 0);
+
   await soClient.update<AgentSOAttributes>(AGENT_SAVED_OBJECT_TYPE, agent.id, {
     actions: updatedActions,
+    config_revision: configRevision,
   });
 }
