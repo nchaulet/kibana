@@ -22,8 +22,8 @@ interface Props extends HeaderProps {
 export const WithHeaderLayout: React.FC<Props> = ({ restrictWidth, children, ...rest }) => (
   <Fragment>
     <Header {...rest} />
-    <Page restrictWidth={restrictWidth || 1200}>
-      <EuiPageBody>
+    <Page>
+      <EuiPageBody restrictWidth={restrictWidth || 1200}>
         <EuiSpacer size="m" />
         {children}
       </EuiPageBody>
