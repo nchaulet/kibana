@@ -39,10 +39,10 @@ export async function agentCheckin(
   if (data.localMetadata && !deepEqual(data.localMetadata, agent.local_metadata)) {
     updateData.local_metadata = data.localMetadata;
   }
-
   if (data.status !== agent.last_checkin_status) {
     updateData.last_checkin_status = data.status;
   }
+  // Update agent only if something changed
   if (Object.keys(updateData).length > 0) {
     await soClient.update<AgentSOAttributes>(AGENT_SAVED_OBJECT_TYPE, agent.id, updateData);
   }
