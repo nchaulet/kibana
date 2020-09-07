@@ -15,6 +15,7 @@ import {
   PostAgentEnrollResponse,
   GetAgentStatusResponse,
   PutAgentReassignResponse,
+  PostAgentEnrollRequest,
 } from '../../../common/types';
 import {
   GetAgentsRequestSchema,
@@ -22,8 +23,7 @@ import {
   UpdateAgentRequestSchema,
   DeleteAgentRequestSchema,
   GetOneAgentEventsRequestSchema,
-  PostAgentCheckinRequestSchema,
-  PostAgentEnrollRequestSchema,
+  PostAgentCheckinRequest,
   GetAgentStatusRequestSchema,
   PutAgentReassignRequestSchema,
 } from '../../types';
@@ -159,9 +159,9 @@ export const updateAgentHandler: RequestHandler<
 };
 
 export const postAgentCheckinHandler: RequestHandler<
-  TypeOf<typeof PostAgentCheckinRequestSchema.params>,
+  PostAgentCheckinRequest['params'],
   undefined,
-  TypeOf<typeof PostAgentCheckinRequestSchema.body>
+  PostAgentCheckinRequest['body']
 > = async (context, request, response) => {
   try {
     const soClient = appContextService.getInternalUserSOClient(request);
@@ -171,6 +171,10 @@ export const postAgentCheckinHandler: RequestHandler<
       abortController.abort();
     });
     const signal = abortController.signal;
+    const requestTimeoutMs = appContextService.getConfig()?.fleet.pollingRequestTimeout ?? 0;
+    const reqTimeout = setTimeout(function checkinRequestTimeout() {
+      abortController.abort();
+    }, Math.max(3000, requestTimeoutMs - 3000));
     const { actions } = await AgentService.agentCheckin(
       soClient,
       agent,
@@ -181,6 +185,7 @@ export const postAgentCheckinHandler: RequestHandler<
       },
       { signal }
     );
+    clearTimeout(reqTimeout);
     const body: PostAgentCheckinResponse = {
       action: 'checkin',
       actions: actions.map((a) => ({
@@ -218,7 +223,7 @@ export const postAgentCheckinHandler: RequestHandler<
 export const postAgentEnrollHandler: RequestHandler<
   undefined,
   undefined,
-  TypeOf<typeof PostAgentEnrollRequestSchema.body>
+  PostAgentEnrollRequest['body']
 > = async (context, request, response) => {
   try {
     const soClient = appContextService.getInternalUserSOClient(request);

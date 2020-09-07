@@ -33,7 +33,7 @@ function agentCheckinStateFactory() {
     }
   }
   return {
-    subscribeToNewActions: async (
+    subscribeToNewActions2: async (
       soClient: SavedObjectsClientContract,
       agent: Agent,
       options?: { signal: AbortSignal }
@@ -44,7 +44,7 @@ function agentCheckinStateFactory() {
 
       return agentConnected.wrapPromise(
         agent.id,
-        newActions.subscribeToNewActions(soClient, agent, options)
+        newActions.subscribeToNewActions2(soClient, agent, options)
       );
     },
     start,

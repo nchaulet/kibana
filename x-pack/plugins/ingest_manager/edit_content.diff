@@ -1,0 +1,15 @@
+diff --git x-pack/plugins/alerts/server/authorization/alerts_authorization.ts x-pack/plugins/alerts/server/authorization/alerts_authorization.ts
+index b2a214eae9..f69c9de0ca 100644
+--- x-pack/plugins/alerts/server/authorization/alerts_authorization.ts
++++ x-pack/plugins/alerts/server/authorization/alerts_authorization.ts
+@@ -242,6 +242,10 @@ export class AlertsAuthorization {
+       );
+ 
+       const authorizedEntries: Map<string, Set<string>> = new Map();
++      console.log(
++        'TEST',
++        `(${this.asFiltersByAlertTypeAndConsumer(authorizedAlertTypes).join(' or ')})`
++      );
+       return {
+         filter: `(${this.asFiltersByAlertTypeAndConsumer(authorizedAlertTypes).join(' or ')})`,
+         ensureAlertTypeIsAuthorized: (alertTypeId: string, consumer: string) => {

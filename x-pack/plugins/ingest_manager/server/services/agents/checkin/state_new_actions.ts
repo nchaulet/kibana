@@ -63,18 +63,91 @@ function createNewActionsSharedObservable(): Observable<AgentAction[]> {
   );
 }
 
-function createAgentPolicyActionSharedObservable(agentPolicyId: string) {
-  const internalSOClient = getInternalUserSOClient();
+// function createAgentPolicyActionSharedObservable(agentPolicyId: string) {
+//   const internalSOClient = getInternalUserSOClient();
 
-  return timer(0, AGENT_UPDATE_ACTIONS_INTERVAL_MS).pipe(
-    switchMap(() => from(getLatestConfigChangeAction(internalSOClient, agentPolicyId))),
-    filter((data): data is AgentPolicyAction => data !== undefined),
-    distinctUntilKeyChanged('id'),
-    switchMap((data) =>
-      from(getAgentPolicyActionByIds(internalSOClient, [data.id]).then((r) => r[0]))
-    ),
-    shareReplay({ refCount: true, bufferSize: 1 })
-  );
+//   return timer(0, AGENT_UPDATE_ACTIONS_INTERVAL_MS).pipe(
+//     switchMap(() => from(getLatestConfigChangeAction(internalSOClient, agentPolicyId);),
+//     filter((data): data is AgentPolicyAction => data !== undefined),
+//     distinctUntilKeyChanged('id'),
+//     switchMap((data) =>
+//       from(getAgentPolicyActionByIds(internalSOClient, [data.id]).then((r) => r[0]))
+//     ),
+//     shareReplay({ refCount: true, bufferSize: 1 })
+//   );
+// }
+
+function agentPolicyActionState(agentPolicyId: string) {
+  const internalSOClient = getInternalUserSOClient();
+  const promises: any[] = [];
+
+  let fetchTimeout: NodeJS.Timeout;
+  let latestAgentPolicyAction: AgentPolicyAction;
+
+  function createFetchTimeout() {
+    return setTimeout(async function fetchLatestConfigChange() {
+      try {
+        const data = await getLatestConfigChangeAction(internalSOClient, agentPolicyId);
+
+        if (!data) {
+          throw new Error(`No policy change action for policy ${agentPolicyId}`);
+        }
+
+        if (
+          !latestAgentPolicyAction ||
+          latestAgentPolicyAction.policy_revision < data.policy_revision
+        ) {
+          const decryptedData = await getAgentPolicyActionByIds(internalSOClient, [data.id]).then(
+            (r) => r[0]
+          );
+
+          latestAgentPolicyAction = decryptedData;
+          for (const p of promises) {
+            if (!p.revision || p.revision < latestAgentPolicyAction.policy_revision) {
+              p.resolve(latestAgentPolicyAction);
+              promises.splice(promises.indexOf(p), 1);
+            }
+          }
+        }
+      } catch (err) {
+        // TODO log error
+        console.log(err);
+      }
+
+      if (promises.length > 0) {
+        fetchTimeout = createFetchTimeout();
+      }
+    }, AGENT_UPDATE_ACTIONS_INTERVAL_MS);
+  }
+
+  async function waitForNewPolicyAction(revision?: number, options?: { signal: AbortSignal }) {
+    if (latestAgentPolicyAction && latestAgentPolicyAction.policy_revision > (revision || 0)) {
+      return latestAgentPolicyAction;
+    }
+
+    let p: { resolve: (data: any) => void; reject: () => void; revision?: number };
+    const promise = new Promise((resolve, reject) => {
+      p = { resolve, reject, revision };
+      promises.push(p);
+    });
+
+    if (options?.signal) {
+      options.signal.onabort = function onAbortWaitForNewPolicyAction() {
+        p.resolve(undefined);
+        promises.splice(promises.indexOf(p), 1);
+      };
+    }
+
+    if (!fetchTimeout) {
+      fetchTimeout = createFetchTimeout();
+    }
+
+    return promise;
+  }
+
+  return {
+    waitForNewPolicyAction,
+  };
 }
 
 async function getOrCreateAgentDefaultOutputAPIKey(
@@ -138,7 +211,9 @@ export function agentCheckinStateNewActionsFactory() {
       AGENT_POLICY_ROLLOUT_RATE_LIMIT_REQUEST_PER_INTERVAL
   );
 
-  async function subscribeToNewActions(
+  const agentPoliciesStates = new Map<string, ReturnType<typeof agentPolicyActionState>>();
+
+  async function subscribeToNewActions2(
     soClient: SavedObjectsClientContract,
     agent: Agent,
     options?: { signal: AbortSignal }
@@ -147,55 +222,26 @@ export function agentCheckinStateNewActionsFactory() {
       throw new Error('Agent does not have a policy');
     }
     const agentPolicyId = agent.policy_id;
-    if (!agentPolicies$.has(agentPolicyId)) {
-      agentPolicies$.set(agentPolicyId, createAgentPolicyActionSharedObservable(agentPolicyId));
+    if (!agentPoliciesStates.has(agentPolicyId)) {
+      agentPoliciesStates.set(agentPolicyId, agentPolicyActionState(agentPolicyId));
     }
-    const agentPolicy$ = agentPolicies$.get(agentPolicyId);
-    if (!agentPolicy$) {
-      throw new Error(`Invalid state, no observable for policy ${agentPolicyId}`);
+    const agentPolicyState = agentPoliciesStates.get(agentPolicyId);
+    if (!agentPolicyState) {
+      throw new Error(`Invalid state, no state for policy ${agentPolicyId}`);
     }
 
-    const stream$ = agentPolicy$.pipe(
-      timeout(appContextService.getConfig()?.fleet.pollingRequestTimeout || 0),
-      filter(
-        (action) =>
-          agent.policy_id !== undefined &&
-          action.policy_revision !== undefined &&
-          action.policy_id !== undefined &&
-          action.policy_id === agent.policy_id &&
-          (!agent.policy_revision || action.policy_revision > agent.policy_revision)
-      ),
-      rateLimiter(),
-      mergeMap((policyAction) => createAgentActionFromPolicyAction(soClient, agent, policyAction)),
-      merge(newActions$),
-      mergeMap(async (data) => {
-        if (!data) {
-          return;
-        }
-        const newActions = data.filter((action) => action.agent_id);
-        if (newActions.length === 0) {
-          return;
-        }
-
-        return newActions;
-      }),
-      filter((data) => data !== undefined),
-      take(1)
+    const policyAction = await agentPolicyState.waitForNewPolicyAction(
+      agent.policy_revision,
+      options
     );
-    try {
-      const data = await toPromiseAbortable(stream$, options?.signal);
-
-      return data || [];
-    } catch (err) {
-      if (err instanceof TimeoutError || err instanceof AbortError) {
-        return [];
-      }
-
-      throw err;
+    if (!policyAction) {
+      return [];
     }
+    const r = await createAgentActionFromPolicyAction(soClient, agent, policyAction);
+    return r;
   }
 
   return {
-    subscribeToNewActions,
+    subscribeToNewActions2,
   };
 }

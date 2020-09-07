@@ -54,7 +54,7 @@ export async function agentCheckin(
   }
 
   // Wait for new actions
-  actions = await agentCheckinState.subscribeToNewActions(soClient, agent, options);
+  actions = await agentCheckinState.subscribeToNewActions2(soClient, agent, options);
 
   return { actions };
 }
