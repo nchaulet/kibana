@@ -53,10 +53,10 @@ function getInternalUserSOClient() {
 }
 
 function createNewActionsSharedObservable(): Observable<AgentAction[]> {
-  const internalSOClient = getInternalUserSOClient();
-
   return timer(0, AGENT_UPDATE_ACTIONS_INTERVAL_MS).pipe(
     switchMap(() => {
+      const internalSOClient = getInternalUserSOClient();
+
       return from(getNewActionsSince(internalSOClient, new Date().toISOString()));
     }),
     shareReplay({ refCount: true, bufferSize: 1 })
