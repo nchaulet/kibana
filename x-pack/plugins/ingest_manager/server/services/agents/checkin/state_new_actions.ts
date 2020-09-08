@@ -132,6 +132,13 @@ function agentPolicyActionState(agentPolicyId: string) {
   let fetchTimeout: NodeJS.Timeout;
   let latestAgentPolicyAction: AgentPolicyAction;
 
+  const configRolloutRateLimiter = rateLimiter(
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitIntervalMs ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_INTERVAL_MS,
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitRequestPerInterval ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_REQUEST_PER_INTERVAL
+  );
+
   function createFetchTimeout() {
     return setTimeout(async function fetchLatestConfigChange() {
       try {
@@ -171,6 +178,8 @@ function agentPolicyActionState(agentPolicyId: string) {
 
   async function waitForNewPolicyAction(revision?: number, options?: { signal: AbortSignal }) {
     if (latestAgentPolicyAction && latestAgentPolicyAction.policy_revision > (revision || 0)) {
+      await configRolloutRateLimiter.consumeTokenOrWait(options);
+
       return latestAgentPolicyAction;
     }
 
