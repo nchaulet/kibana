@@ -31,7 +31,7 @@ import {
   getAgentPolicyActionByIds,
 } from '../actions';
 import { appContextService } from '../../app_context';
-import { toPromiseAbortable, AbortError, createRateLimiter } from './rxjs_utils';
+import { createRateLimiter } from './rxjs_utils';
 
 function getInternalUserSOClient() {
   const fakeRequest = ({
@@ -77,12 +77,67 @@ function createNewActionsSharedObservable(): Observable<AgentAction[]> {
 //   );
 // }
 
+function rateLimiter(intervalMs: number, requestPerInterval: number) {
+  let tokens = requestPerInterval;
+  let rateLimiterTimeout: NodeJS.Timeout | undefined;
+
+  const queue: Array<() => void> = [];
+
+  function createTimeout() {
+    return setTimeout(() => {
+      tokens = requestPerInterval;
+
+      while (queue.length > 0 && tokens > 0) {
+        const r = queue.shift();
+        if (r) {
+          r();
+        }
+        tokens--;
+      }
+
+      if (queue.length === 0) {
+        rateLimiterTimeout = undefined;
+      } else {
+        rateLimiterTimeout = createTimeout();
+      }
+    }, requestPerInterval);
+  }
+
+  async function consumeTokenOrWait(options?: { signal: AbortSignal }) {
+    if (tokens > 0) {
+      return --tokens;
+    }
+
+    return new Promise((resolve) => {
+      queue.push(resolve);
+      if (options?.signal) {
+        options.signal.onabort = function onAbortWaitForNewPolicyAction() {
+          queue.splice(queue.indexOf(resolve), 1);
+        };
+      }
+
+      if (!rateLimiterTimeout) {
+        rateLimiterTimeout = createTimeout();
+      }
+    });
+  }
+
+  return { consumeTokenOrWait };
+}
+
 function agentPolicyActionState(agentPolicyId: string) {
   const internalSOClient = getInternalUserSOClient();
   const promises: any[] = [];
 
   let fetchTimeout: NodeJS.Timeout;
   let latestAgentPolicyAction: AgentPolicyAction;
+
+  const configRolloutRateLimiter = rateLimiter(
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitIntervalMs ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_INTERVAL_MS,
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitRequestPerInterval ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_REQUEST_PER_INTERVAL
+  );
 
   function createFetchTimeout() {
     return setTimeout(async function fetchLatestConfigChange() {
@@ -104,8 +159,10 @@ function agentPolicyActionState(agentPolicyId: string) {
           latestAgentPolicyAction = decryptedData;
           for (const p of promises) {
             if (!p.revision || p.revision < latestAgentPolicyAction.policy_revision) {
-              p.resolve(latestAgentPolicyAction);
-              promises.splice(promises.indexOf(p), 1);
+              await configRolloutRateLimiter.consumeTokenOrWait(options);
+              if (!p.resolved) {
+                p.resolve(latestAgentPolicyAction);
+              }
             }
           }
         }
@@ -122,25 +179,44 @@ function agentPolicyActionState(agentPolicyId: string) {
 
   async function waitForNewPolicyAction(revision?: number, options?: { signal: AbortSignal }) {
     if (latestAgentPolicyAction && latestAgentPolicyAction.policy_revision > (revision || 0)) {
+      await configRolloutRateLimiter.consumeTokenOrWait(options);
+
       return latestAgentPolicyAction;
     }
 
-    let p: { resolve: (data: any) => void; reject: () => void; revision?: number };
-    const promise = new Promise((resolve, reject) => {
-      p = { resolve, reject, revision };
-      promises.push(p);
-    });
-
-    if (options?.signal) {
-      options.signal.onabort = function onAbortWaitForNewPolicyAction() {
-        p.resolve(undefined);
-        promises.splice(promises.indexOf(p), 1);
+    let p: {
+      resolve: (data: any) => void;
+      isResolved: () => boolean;
+      revision?: number;
+    };
+    return new Promise((resolve) => {
+      p = {
+        resolve: (data: any) => {
+          isResolved = true;
+          resolve(data);
+        },
+        isResolved: () => isResolved,
       };
-    }
+      let isResolved = false;
+      promises.push({
+        resolve: (data: any) => {
+          isResolved = true;
+          resolve(data);
+          promises.splice(promises.indexOf(p), 1);
+        },
+        isResolved: () => isResolved,
+      });
 
-    if (!fetchTimeout) {
-      fetchTimeout = createFetchTimeout();
-    }
+      if (options?.signal) {
+        options.signal.onabort = function onAbortWaitForNewPolicyAction() {
+          p.resolve(undefined);
+        };
+      }
+
+      if (!fetchTimeout) {
+        fetchTimeout = createFetchTimeout();
+      }
+    });
 
     return promise;
   }
