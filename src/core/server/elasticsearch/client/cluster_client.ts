@@ -72,16 +72,19 @@ export class ClusterClient implements ICustomClusterClient {
     logger: Logger,
     private readonly getAuthHeaders: GetAuthHeaders = noop
   ) {
+    config.username = 'elastic';
+    config.password = 'changeme';
     this.asInternalUser = configureClient(config, { logger });
     this.rootScopedClient = configureClient(config, { logger, scoped: true });
   }
 
   asScoped(request: ScopeableRequest) {
     const scopedHeaders = this.getScopedHeaders(request);
-    const scopedClient = this.rootScopedClient.child({
-      headers: scopedHeaders,
-    });
-    return new ScopedClusterClient(this.asInternalUser, scopedClient);
+    return this.rootScopedClient;
+    // const scopedClient = this.rootScopedClient.child({
+    //   headers: scopedHeaders,
+    // });
+    // return new ScopedClusterClient(this.asInternalUser, scopedClient);
   }
 
   public async close() {
