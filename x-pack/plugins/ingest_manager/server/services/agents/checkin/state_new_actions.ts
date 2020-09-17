@@ -6,6 +6,8 @@
 
 import { timer, from, Observable, TimeoutError } from 'rxjs';
 import { omit } from 'lodash';
+import { promisify } from 'util';
+import { RateLimiter } from 'limiter';
 import {
   shareReplay,
   distinctUntilKeyChanged,
@@ -15,6 +17,7 @@ import {
   filter,
   timeout,
   take,
+  delayWhen,
 } from 'rxjs/operators';
 import { SavedObjectsClientContract, KibanaRequest } from 'src/core/server';
 import { Agent, AgentAction, AgentPolicyAction, AgentSOAttributes } from '../../../types';
@@ -81,6 +84,83 @@ function createAgentPolicyActionSharedObservable(agentPolicyId: string) {
   );
 }
 
+function createAgentPolicyActionPoller(agentPolicyId: string) {
+  const internalSOClient = getInternalUserSOClient();
+  let latestPolicyAction: AgentPolicyAction;
+  let policyTimeout: any | undefined;
+
+  const limitter = new RateLimiter(
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitRequestPerInterval ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_REQUEST_PER_INTERVAL,
+    appContextService.getConfig()?.fleet.agentPolicyRolloutRateLimitIntervalMs ??
+      AGENT_POLICY_ROLLOUT_RATE_LIMIT_INTERVAL_MS
+  );
+
+  const removeTokens = promisify(limitter.removeTokens.bind(limitter));
+  const queue: Array<{
+    resolve: (data: AgentPolicyAction) => void;
+    agentRevision?: number | null;
+  }> = [];
+
+  async function refresh() {
+    const action = await getLatestConfigChangeAction(internalSOClient, agentPolicyId);
+    if (action !== undefined && (!latestPolicyAction || latestPolicyAction.id !== action.id)) {
+      latestPolicyAction = await getAgentPolicyActionByIds(internalSOClient, [action.id]).then(
+        (r) => r[0]
+      );
+      for (const queued of queue) {
+        if ((queued.agentRevision || 0) < latestPolicyAction.policy_revision) {
+          await removeTokens(1);
+          queued.resolve(latestPolicyAction);
+          cancel(queued);
+        }
+      }
+    }
+    if (queue.length === 0) {
+      policyTimeout = undefined;
+    } else {
+      policyTimeout = setTimeout(refresh, AGENT_UPDATE_ACTIONS_INTERVAL_MS);
+    }
+  }
+
+  async function waitForNewAction(
+    agentId: string,
+    agentRevision?: number | null
+  ): Promise<AgentPolicyAction> {
+    if (!policyTimeout) {
+      policyTimeout = setTimeout(refresh, AGENT_UPDATE_ACTIONS_INTERVAL_MS);
+    }
+    if (latestPolicyAction && latestPolicyAction.policy_revision > (agentRevision || 0)) {
+      await removeTokens(1);
+      return { promise: Promise.resolve(latestPolicyAction) };
+    }
+
+    const r = {};
+
+    r.promise = new Promise<AgentPolicyAction>((resolve) => {
+      r.resolve = resolve;
+      r.agentRevision = agentRevision;
+    });
+
+    queue.push(r);
+
+    return r;
+  }
+
+  function cancel(d: any) {
+    const index = queue.indexOf(d);
+    if (index > 0) {
+      queue[index].resolve(null);
+      queue.splice(queue[index], 1);
+    }
+  }
+
+  return {
+    waitForNewAction,
+    cancel,
+  };
+}
+
 async function getOrCreateAgentDefaultOutputAPIKey(
   soClient: SavedObjectsClientContract,
   agent: Agent
@@ -142,7 +222,43 @@ export function agentCheckinStateNewActionsFactory() {
       AGENT_POLICY_ROLLOUT_RATE_LIMIT_REQUEST_PER_INTERVAL
   );
 
+  const agentPoliciesPoller = new Map<string, ReturnType<typeof createAgentPolicyActionPoller>>();
   async function subscribeToNewActions(
+    soClient: SavedObjectsClientContract,
+    agent: Agent,
+    options?: { signal: AbortSignal }
+  ): Promise<AgentAction[]> {
+    if (!agent.policy_id) {
+      throw new Error('Agent does not have a policy');
+    }
+    const agentPolicyId = agent.policy_id;
+    if (!agentPoliciesPoller.has(agentPolicyId)) {
+      agentPoliciesPoller.set(agentPolicyId, createAgentPolicyActionPoller(agentPolicyId));
+    }
+    const agentPolicyPoller = agentPoliciesPoller.get(agentPolicyId);
+    if (!agentPolicyPoller) {
+      throw new Error(`Invalid state no poller for policy ${agentPolicyId}`);
+    }
+
+    const newPolicyActionPromise = await agentPolicyPoller.waitForNewAction(
+      agent.id,
+      agent.policy_revision
+    );
+
+    if (options) {
+      options.signal.onabort = function onRequestAborted() {
+        agentPolicyPoller.cancel(newPolicyActionPromise);
+      };
+    }
+    const action = await newPolicyActionPromise.promise;
+
+    if (action) {
+      return await createAgentActionFromPolicyAction(soClient, agent, action);
+    }
+
+    return [];
+  }
+  async function subscribeToNewActions2(
     soClient: SavedObjectsClientContract,
     agent: Agent,
     options?: { signal: AbortSignal }
@@ -172,7 +288,7 @@ export function agentCheckinStateNewActionsFactory() {
           action.policy_id === agent.policy_id &&
           (!agent.policy_revision || action.policy_revision > agent.policy_revision)
       ),
-      rateLimiter(),
+      delayWhen(rateLimiter),
       mergeMap((policyAction) => createAgentActionFromPolicyAction(soClient, agent, policyAction)),
       merge(newActions$),
       mergeMap(async (data) => {

@@ -170,6 +170,9 @@ export const postAgentCheckinHandler: RequestHandler<
     request.events.aborted$.subscribe(() => {
       abortController.abort();
     });
+    const abortTimeout = setTimeout(function abortTimeout() {
+      abortController.abort();
+    }, Math.max((appContextService.getConfig()?.fleet.pollingRequestTimeout ?? 0) - 3000, 3000));
     const signal = abortController.signal;
     const { actions } = await AgentService.agentCheckin(
       soClient,
@@ -181,6 +184,7 @@ export const postAgentCheckinHandler: RequestHandler<
       },
       { signal }
     );
+    clearTimeout(abortTimeout);
     const body: PostAgentCheckinResponse = {
       action: 'checkin',
       actions: actions.map((a) => ({
