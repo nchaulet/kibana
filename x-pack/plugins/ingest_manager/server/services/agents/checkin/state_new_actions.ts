@@ -108,7 +108,7 @@ function createAgentPolicyActionPoller(agentPolicyId: string) {
       latestPolicyAction = await getAgentPolicyActionByIds(internalSOClient, [action.id]).then(
         (r) => r[0]
       );
-      for (const queued of queue) {
+      for (const queued of [...queue]) {
         if ((queued.agentRevision || 0) < latestPolicyAction.policy_revision) {
           await removeTokens(1);
           queued.resolve(latestPolicyAction);
