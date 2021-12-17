@@ -430,6 +430,7 @@ export class FleetPlugin
         return new FleetArtifactsClient(core.elasticsearch.client.asInternalUser, packageName);
       },
       fetchFindLatestPackage,
+      // TODO return new package client here
     };
   }
 
