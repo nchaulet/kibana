@@ -30,6 +30,11 @@ export interface PackageService {
   asInternalUser: PackageClient;
 }
 
+const isTransform = (path: string) => {
+  const pathParts = getPathParts(path);
+  return !path.endsWith('/') && pathParts.type === ElasticsearchAssetType.transform;
+};
+
 export interface PackageClient {
   fetchFindLatestPackage(packageName: string): Promise<RegistrySearchResult>;
 
@@ -39,9 +44,8 @@ export interface PackageClient {
   ): Promise<{ packageInfo: RegistryPackage; paths: string[] }>;
 
   reinstallEsAssets(
-    assetType: ElasticsearchAssetType,
     packageInfo: InstallablePackage,
-    paths: string[]
+    assetsPaths: string[]
   ): Promise<InstalledAssetType[]>;
 }
 
@@ -93,18 +97,25 @@ class PackageClientImpl implements PackageClient {
   }
 
   public async reinstallEsAssets(
-    assetType: ElasticsearchAssetType,
     packageInfo: InstallablePackage,
-    paths: string[]
+    assetsPaths: string[]
   ): Promise<InstalledAssetType[]> {
     await this.#runPreflight();
+    let installedAssets: InstalledAssetType[] = [];
 
-    switch (assetType) {
-      case ElasticsearchAssetType.transform:
-        return this.#reinstallTransforms(packageInfo, paths);
+    const transformPaths = assetsPaths.filter((path) => isTransform(path));
+
+    if (transformPaths.length !== assetsPaths.length) {
+      throw new Error('reinstallEsAssets is currently only implemented for transform assets');
     }
 
-    return Promise.reject('No matching asset type found in paths');
+    if (transformPaths.length > 0) {
+      installedAssets = installedAssets.concat(
+        await this.#reinstallTransforms(packageInfo, transformPaths)
+      );
+    }
+
+    return installedAssets;
   }
 
   #reinstallTransforms(packageInfo: InstallablePackage, paths: string[]) {
