@@ -105,9 +105,9 @@ export const ConfigureStandaloneAgentStep = ({
               <EuiFlexItem grow={false}>
                 <EuiButton
                   iconType="download"
+                  href={downloadLink}
                   onClick={() => {
                     if (onCopy) onCopy();
-                    window.location.href = downloadLink;
                   }}
                   isDisabled={!downloadLink}
                 >
