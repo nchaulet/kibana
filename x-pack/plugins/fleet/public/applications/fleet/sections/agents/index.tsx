@@ -53,8 +53,7 @@ export const AgentsApp: React.FunctionComponent = () => {
     fleetStatus?.missingRequirements?.length === 1 &&
     fleetStatus.missingRequirements[0] === 'fleet_server';
 
-  const displayInstructions =
-    fleetStatus.forceDisplayInstructions || hasOnlyFleetServerMissingRequirement;
+  const displayInstructions = hasOnlyFleetServerMissingRequirement;
 
   if (
     !hasOnlyFleetServerMissingRequirement &&

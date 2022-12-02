@@ -7,14 +7,18 @@
 
 import type { RequestHandler } from '@kbn/core/server';
 import type { TypeOf } from '@kbn/config-schema';
+import fetch from 'node-fetch';
 
 import { APP_API_ROUTES } from '../../constants';
-import { appContextService } from '../../services';
+import { agentPolicyService, appContextService } from '../../services';
 import type { CheckPermissionsResponse, GenerateServiceTokenResponse } from '../../../common/types';
 import { defaultFleetErrorHandler, GenerateServiceTokenError } from '../../errors';
 import type { FleetAuthzRouter } from '../security';
 import type { FleetRequestHandler } from '../../types';
 import { CheckPermissionsRequestSchema } from '../../types';
+import { createAgentPolicyWithPackages } from '../../services/agent_policy_create';
+import { createFleetServerHost } from '../../services/fleet_server_host';
+import { outputService } from '../../services/output';
 
 export const getCheckPermissionsHandler: FleetRequestHandler<
   unknown,
@@ -115,5 +119,91 @@ export const registerRoutes = (router: FleetAuthzRouter) => {
       },
     },
     generateServiceTokenHandler
+  );
+
+  router.post(
+    {
+      path: '/api/fleet/enable_fleet_service',
+      validate: false,
+      fleetAuthz: {
+        fleet: { setup: true },
+      },
+    },
+    async (context, req, response) => {
+      try {
+        const coreContext = await context.core;
+        const fleetContext = await context.fleet;
+        const soClient = fleetContext.epm.internalSoClient;
+        const esClient = coreContext.elasticsearch.client.asInternalUser;
+        const userEsClient = coreContext.elasticsearch.client.asCurrentUser;
+
+        const fleetServerPolicy = await agentPolicyService
+          .get(soClient, 'fleet-server-policy', false)
+          .catch((err) => {
+            if (!err.isBoom || err.output.statusCode !== 404) {
+              throw err;
+            }
+          });
+
+        // Create fleet server policy if needed
+        if (!fleetServerPolicy) {
+          await createAgentPolicyWithPackages({
+            esClient,
+            soClient,
+            newPolicy: {
+              name: 'Fleet server',
+              namespace: 'default',
+            },
+            withSysMonitoring: false,
+            spaceId: fleetContext.spaceId,
+            hasFleetServer: true,
+          });
+        }
+
+        const tokenResponse = await userEsClient.transport.request<{
+          created?: boolean;
+          token?: GenerateServiceTokenResponse;
+        }>({
+          method: 'POST',
+          path: `_security/service/elastic/fleet-server/credential/token/token-${Date.now()}`,
+        });
+
+        const output = await outputService.get(
+          soClient,
+          // @ts-ignore-error
+          await outputService.getDefaultDataOutputId(soClient)
+        );
+
+        const deploymentName = `deployment${Date.now()}`;
+        const res = await fetch('http://api.fleet.elastic.test/fleet-server-deployments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            service_account_token: tokenResponse.token?.value,
+            deployment_name: deploymentName,
+            elasticsearch_host: output.hosts?.[0],
+          }),
+        });
+
+        console.log(await res.text(), tokenResponse.token);
+
+        await createFleetServerHost(soClient, {
+          host_urls: [`https://${deploymentName}.fleet.elastic.test`],
+          is_default: true,
+          name: `Fleet server ${deploymentName}`,
+          is_preconfigured: false,
+        });
+
+        return response.ok({
+          body: {
+            message: 'done',
+          },
+        });
+      } catch (error) {
+        return defaultFleetErrorHandler({ error, response });
+      }
+    }
   );
 };

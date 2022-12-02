@@ -24,7 +24,7 @@ import { FormattedMessage } from '@kbn/i18n-react';
 
 import styled from 'styled-components';
 
-import { useStartServices, useFlyoutContext } from '../../hooks';
+import { useStartServices, useFlyoutContext, sendRequest, useFleetStatus } from '../../hooks';
 
 import { QuickStartTab } from './quick_start_tab';
 import { AdvancedTab } from './advanced_tab';
@@ -139,11 +139,27 @@ export const FleetServerFlyout: React.FunctionComponent<Props> = ({ onClose }) =
 
 export const AddFleetServerLanding: React.FunctionComponent = () => {
   const { docLinks } = useStartServices();
-  const flyoutContext = useFlyoutContext();
+  // const flyoutContext = useFlyoutContext();
+  const [isLoading, setIsLoading] = useState(false);
+  const fleetStatus = useFleetStatus();
+  const onClickAddFleetServer = useCallback(async () => {
+    setIsLoading(true);
+    const res = await sendRequest({
+      method: 'post',
+      path: '/api/fleet/enable_fleet_service',
+      body: {},
+    });
 
-  const onClickAddFleetServer = useCallback(() => {
-    flyoutContext.openFleetServerFlyout();
-  }, [flyoutContext]);
+    async function refresh() {
+      await fleetStatus.refresh();
+
+      return fleetStatus.missingRequirements?.includes('fleet_server');
+    }
+
+    while (await refresh()) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }, [fleetStatus]);
 
   return (
     <ContentWrapper gutterSize="none" justifyContent="center" direction="column">
@@ -153,7 +169,7 @@ export const AddFleetServerLanding: React.FunctionComponent = () => {
             <h2 data-test-subj="addFleetServerHeader">
               <FormattedMessage
                 id="xpack.fleet.fleetServerLanding.title"
-                defaultMessage="Add a Fleet Server"
+                defaultMessage="Enable Fleet server via Fleet service"
               />
             </h2>
           </EuiTitle>
@@ -199,6 +215,8 @@ export const AddFleetServerLanding: React.FunctionComponent = () => {
             <EuiButton
               onClick={onClickAddFleetServer}
               fill
+              isLoading={isLoading}
+              isDisabled={isLoading}
               data-test-subj="fleetServerLanding.addFleetServerButton"
             >
               <FormattedMessage
