@@ -29,7 +29,7 @@ put:
     content:
       application/json:
         schema:
-          $ref: ../components/schemas/package_policy_request.yaml
+          $ref: ../components/schemas/package_policy_update_request.yaml
   responses:
     '200':
       description: OK

@@ -49,6 +49,6 @@ post:
     content:
       application/json:
         schema:
-          $ref: ../components/schemas/package_policy_request.yaml
+          $ref: ../components/schemas/package_policy_create_request.yaml
   parameters:
     - $ref: ../components/headers/kbn_xsrf.yaml
